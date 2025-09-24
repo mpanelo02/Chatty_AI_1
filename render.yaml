@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: chatty-ai-backend
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HF_API_KEY
+        fromSecret: HF_API_KEY
