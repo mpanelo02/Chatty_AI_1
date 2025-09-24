@@ -11,12 +11,23 @@ const cache = new NodeCache({ stdTTL: 3600 });
 app.use(cors());
 app.use(express.json());
 
-// Hugging Face API configuration - USE A BETTER MODEL
+// Hugging Face API configuration - USING WORKING MODELS
 const HF_API_KEY = process.env.HF_API_KEY;
-const HF_API_URL = 'https://api-inference.huggingface.co/models/microsoft/DialoGPT-large';
-// Alternative models if above doesn't work:
-// 'https://api-inference.huggingface.co/models/google/flan-t5-xl'
-// 'https://api-inference.huggingface.co/models/gpt2'
+
+// List of working models (try in order)
+const MODEL_URLS = [
+    'https://api-inference.huggingface.co/models/microsoft/DialoGPT-medium', // Most reliable
+    'https://api-inference.huggingface.co/models/google/flan-t5-base',
+    'https://api-inference.huggingface.co/models/gpt2',
+    'https://api-inference.huggingface.co/models/distilgpt2'
+];
+
+let currentModelIndex = 0;
+
+// Function to get current model URL
+function getCurrentModelUrl() {
+    return MODEL_URLS[currentModelIndex];
+}
 
 // Enhanced Urban Farm Lab context
 const URBAN_FARM_CONTEXT = `
@@ -30,107 +41,105 @@ About Urban Farm Lab:
 - Part of Metropolia's Smart Lab ecosystem
 - Focuses on smart farming technologies and sustainable food systems
 
-Key personnel may include researchers like Andrea, but for specific staff information, check Metropolia's official website.
-
-The lab conducts research projects in areas like:
-- Urban agriculture technologies
-- Sustainable food production
-- Circular economy in agriculture
-- Student-industry collaboration
-
-Always be helpful, friendly, and focus on Urban Farm Lab related topics. If you don't know something, admit it politely.
+Key areas: sustainable agriculture, urban farming, research projects, student collaboration
 `;
 
-// Function to query Hugging Face API with better error handling
+// Function to query Hugging Face API with model fallback
 async function queryHuggingFace(question) {
-    try {
-        // Enhanced prompt engineering
-        const prompt = `${URBAN_FARM_CONTEXT}
+    const maxRetries = MODEL_URLS.length;
+    
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+            const currentUrl = getCurrentModelUrl();
+            console.log(`Attempt ${attempt + 1}: Using model ${currentUrl}`);
+            
+            const prompt = `Context: ${URBAN_FARM_CONTEXT}
 
-User Question: "${question}"
+Question: ${question}
 
-Please provide a helpful, accurate response about Urban Farm Lab:
+Answer as Chatty, the Urban Farm Lab assistant:`;
 
-Answer:`;
-
-        const response = await axios.post(
-            HF_API_URL,
-            {
-                inputs: prompt,
-                parameters: {
-                    max_new_tokens: 150,
-                    temperature: 0.7,
-                    do_sample: true,
-                    return_full_text: false
-                }
-            },
-            {
-                headers: {
-                    'Authorization': `Bearer ${HF_API_KEY}`,
-                    'Content-Type': 'application/json'
+            const response = await axios.post(
+                currentUrl,
+                {
+                    inputs: prompt,
+                    parameters: {
+                        max_new_tokens: 200,
+                        temperature: 0.7,
+                        do_sample: true,
+                        return_full_text: false
+                    }
                 },
-                timeout: 45000 // 45 second timeout
+                {
+                    headers: {
+                        'Authorization': `Bearer ${HF_API_KEY}`,
+                        'Content-Type': 'application/json'
+                    },
+                    timeout: 30000
+                }
+            );
+
+            let answer = response.data[0]?.generated_text || "";
+            
+            // Clean up the response
+            answer = answer.trim();
+            
+            // Remove any repetitive content
+            if (answer.includes('Answer:')) {
+                answer = answer.split('Answer:')[1]?.trim() || answer;
             }
-        );
+            if (answer.includes('Question:')) {
+                answer = answer.split('Question:')[0]?.trim() || answer;
+            }
+            
+            return answer || "I'd be happy to tell you more about Metropolia's Urban Farm Lab. What specific aspect interests you?";
 
-        let answer = response.data[0]?.generated_text || "";
-        
-        // Clean up the response
-        answer = answer.trim();
-        
-        // Remove any repetitive prompts from the response
-        if (answer.includes('Answer:')) {
-            answer = answer.split('Answer:')[1]?.trim() || answer;
+        } catch (error) {
+            console.error(`Attempt ${attempt + 1} failed:`, error.response?.status, error.response?.data?.error || error.message);
+            
+            // If it's a model-specific error, try next model
+            if (error.response?.status === 404 || error.response?.status === 503) {
+                currentModelIndex = (currentModelIndex + 1) % MODEL_URLS.length;
+                console.log(`Switching to next model: ${getCurrentModelUrl()}`);
+                continue;
+            }
+            
+            // For other errors, break and use fallback
+            break;
         }
-        
-        return answer || "I'd be happy to help you learn more about Metropolia's Urban Farm Lab. Could you please rephrase your question?";
-
-    } catch (error) {
-        console.error('Hugging Face API error:', error.response?.data || error.message);
-        
-        if (error.response?.status === 503) {
-            return "The AI is currently initializing. This usually takes 20-30 seconds. Please try again in a moment.";
-        }
-        
-        if (error.response?.status === 429) {
-            return "The service is busy right now. Please wait a moment and try again.";
-        }
-        
-        if (error.code === 'ECONNABORTED') {
-            return "The request took too long. Please try again with a more specific question about Urban Farm Lab.";
-        }
-        
-        return "I'm having trouble connecting to the knowledge base right now. Please try again shortly.";
     }
+    
+    return null; // All models failed
 }
 
 // Improved fallback responses
 function getFallbackResponse(question) {
     const lowerQuestion = question.toLowerCase();
     
+    const responses = {
+        greeting: "Hello! I'm Chatty, your AI assistant for Metropolia's Urban Farm Lab. I can tell you about sustainable urban agriculture, research projects, and how the lab collaborates with students and industry partners.",
+        urbanFarm: "The Urban Farm Lab at Metropolia is a collaborative platform that focuses on sustainable urban agriculture. It brings together students, researchers, and industry partners to develop innovative solutions for food production in urban environments using methods like vertical farming and hydroponics.",
+        metropolia: "Metropolia University of Applied Sciences is Finland's largest university of applied sciences. The Urban Farm Lab is one of its innovative platforms that combines education, research, and business collaboration in sustainable food production.",
+        andrea: "Andrea is likely a researcher or staff member associated with the Urban Farm Lab. For specific and current information about team members, I recommend checking the official Metropolia website or contacting the Urban Farm Lab directly.",
+        sustainable: "Sustainable agriculture is a key focus of the Urban Farm Lab. The lab explores environmentally friendly food production methods suitable for urban environments, including circular economy principles and innovative farming technologies.",
+        research: "The Urban Farm Lab conducts various research projects in areas like smart farming technologies, sustainable food systems, and urban agriculture. These projects often involve collaboration between students, researchers, and industry partners.",
+        default: "That's an interesting question about urban farming! The Urban Farm Lab focuses on developing sustainable food production solutions for cities. Could you tell me more about what specific aspect you're curious about?"
+    };
+
     if (lowerQuestion.includes('hello') || lowerQuestion.includes('hi') || lowerQuestion.includes('hey')) {
-        return "Hello! I'm Chatty, your AI assistant for Metropolia's Urban Farm Lab. How can I help you today?";
+        return responses.greeting;
     } else if (lowerQuestion.includes('urban farm') || lowerQuestion.includes('farm lab')) {
-        return "The Urban Farm Lab at Metropolia is a collaborative platform focusing on sustainable urban agriculture. It brings together students, researchers, and industry partners to develop innovative solutions for food production in urban environments through methods like vertical farming and hydroponics.";
+        return responses.urbanFarm;
     } else if (lowerQuestion.includes('metropolia') || lowerQuestion.includes('university')) {
-        return "Metropolia University of Applied Sciences is Finland's largest university of applied sciences, offering practical education and conducting research that serves working life needs. The Urban Farm Lab is one of its innovative collaboration platforms.";
+        return responses.metropolia;
     } else if (lowerQuestion.includes('andrea')) {
-        return "Andrea is likely a researcher or staff member associated with the Urban Farm Lab. For specific and up-to-date information about Andrea's role and contact details, I recommend checking the official Metropolia website or contacting the Urban Farm Lab directly.";
+        return responses.andrea;
     } else if (lowerQuestion.includes('sustainable') || lowerQuestion.includes('agriculture') || lowerQuestion.includes('farming')) {
-        return "Sustainable agriculture is a key focus of the Urban Farm Lab. The lab explores environmentally friendly food production methods suitable for urban environments, including circular economy principles and smart farming technologies.";
+        return responses.sustainable;
     } else if (lowerQuestion.includes('research') || lowerQuestion.includes('project') || lowerQuestion.includes('study')) {
-        return "The Urban Farm Lab conducts various research projects in smart farming technologies, sustainable food systems, and urban-rural interactions. These projects often involve interdisciplinary collaboration between students, researchers, and industry partners.";
-    } else if (lowerQuestion.includes('what') && lowerQuestion.includes('do')) {
-        return "I specialize in providing information about Metropolia's Urban Farm Lab. I can tell you about the lab's research, projects, sustainable agriculture methods, and how it collaborates with students and industry partners.";
+        return responses.research;
     } else {
-        const defaultResponses = [
-            "That's an interesting question! The Urban Farm Lab focuses on developing sustainable food production solutions for urban environments. Could you tell me more about what specific aspect interests you?",
-            "I'd love to help you with that! The Urban Farm Lab works on innovative urban agriculture solutions. Could you rephrase your question or ask about something more specific related to urban farming?",
-            "Thanks for your question! While I specialize in Metropolia's Urban Farm Lab topics, I'd be happy to help if you have questions about urban agriculture, sustainable farming, or the lab's research projects.",
-            "That's a great question! The Urban Farm Lab brings together education, research, and business collaboration to advance urban farming solutions. What specific area are you curious about?",
-            "I appreciate your interest! The Urban Farm Lab explores methods like vertical farming and hydroponics to create sustainable food systems in cities. How can I assist you further?"
-        ];
-        return defaultResponses[Math.floor(Math.random() * defaultResponses.length)];
+        return responses.default;
     }
 }
 
@@ -138,12 +147,23 @@ function getFallbackResponse(question) {
 app.get('/', (req, res) => {
     res.json({ 
         message: 'Chatty AI Backend is running!',
-        version: '1.0.1',
+        version: '1.0.2',
         status: 'operational',
+        currentModel: getCurrentModelUrl(),
+        availableModels: MODEL_URLS.length,
         endpoints: {
             chat: 'POST /api/chat',
-            health: 'GET /health'
+            health: 'GET /health',
+            models: 'GET /models'
         }
+    });
+});
+
+app.get('/models', (req, res) => {
+    res.json({
+        currentModel: getCurrentModelUrl(),
+        allModels: MODEL_URLS,
+        currentIndex: currentModelIndex
     });
 });
 
@@ -162,69 +182,78 @@ app.post('/api/chat', async (req, res) => {
         const cachedResponse = cache.get(cleanQuestion);
         if (cachedResponse) {
             console.log('Serving from cache');
-            return res.json({ answer: cachedResponse, source: 'cache' });
+            return res.json({ 
+                answer: cachedResponse, 
+                source: 'cache',
+                model: 'cached'
+            });
         }
 
         // Try Hugging Face API
         console.log('Querying Hugging Face API...');
         let answer = await queryHuggingFace(cleanQuestion);
+        let source = 'ai';
+        let modelUsed = getCurrentModelUrl();
 
-        // If API response is empty or error-like, use fallback
-        if (!answer || answer.length < 10 || answer.includes('trouble connecting') || answer.includes('initializing')) {
+        // If API failed, use fallback
+        if (answer === null || answer.length < 5) {
             console.log('Using fallback response');
             answer = getFallbackResponse(cleanQuestion);
+            source = 'fallback';
+            modelUsed = 'fallback';
         }
 
         // Final cleanup
         answer = answer.trim();
         if (answer === '') {
-            answer = getFallbackResponse(cleanQuestion);
+            answer = "I'd be happy to help you learn about Metropolia's Urban Farm Lab. What would you like to know?";
+            source = 'fallback';
         }
         
         // Cache the response
         cache.set(cleanQuestion, answer);
-        console.log('Response generated:', answer.substring(0, 100) + '...');
+        console.log('Response generated successfully');
 
         res.json({ 
             answer: answer,
-            source: 'ai'
+            source: source,
+            model: modelUsed
         });
 
     } catch (error) {
         console.error('Chat endpoint error:', error);
         
-        // Fallback response in case of complete failure
+        // Fallback response
         const fallbackAnswer = getFallbackResponse(req.body.question || '');
         res.json({ 
             answer: fallbackAnswer,
             source: 'fallback',
-            error: 'Service temporarily unavailable'
+            model: 'error',
+            error: 'Service temporarily using fallback responses'
         });
     }
 });
 
 // Health check endpoint
-app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'OK', 
-        timestamp: new Date().toISOString(),
-        service: 'Chatty AI Backend',
-        version: '1.0.1'
-    });
-});
-
-// Test Hugging Face connection on startup
-app.get('/test', async (req, res) => {
+app.get('/health', async (req, res) => {
     try {
-        const testResponse = await queryHuggingFace("What is Urban Farm Lab?");
-        res.json({
-            status: 'API test completed',
-            response: testResponse,
-            apiStatus: testResponse.includes('trouble') ? 'unavailable' : 'available'
+        // Test the API connection
+        const testAnswer = await queryHuggingFace("What is Urban Farm Lab?");
+        const apiStatus = testAnswer && testAnswer.length > 10 ? 'healthy' : 'degraded';
+        
+        res.json({ 
+            status: 'OK', 
+            timestamp: new Date().toISOString(),
+            apiStatus: apiStatus,
+            currentModel: getCurrentModelUrl(),
+            cacheSize: cache.keys().length
         });
     } catch (error) {
         res.json({
-            status: 'API test failed',
+            status: 'degraded',
+            timestamp: new Date().toISOString(),
+            apiStatus: 'unavailable',
+            message: 'Using fallback mode',
             error: error.message
         });
     }
@@ -234,7 +263,7 @@ const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
     console.log(`🚀 Chatty AI Backend running on port ${PORT}`);
-    console.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`🔑 API Key: ${HF_API_KEY ? 'Set' : 'Missing!'}`);
+    console.log(`🤖 Available models: ${MODEL_URLS.length}`);
     console.log(`🔗 Health check: http://localhost:${PORT}/health`);
-    console.log(`🧪 API test: http://localhost:${PORT}/test`);
 });
